@@ -9,18 +9,12 @@ LABEL_MAP = {
 }
 
 def evaluate_and_verify(equation_str):
-    """
-    Evalúa una ecuación en formato de string y la verifica.
-    
-    Returns:
-        tuple: (veredicto, resultado_calculado)
-    """
     # Usar 'eval()' es simple, pero puede ser inseguro en producción.
     # Para este caso controlado, donde solo reconocemos números y operadores, es aceptable.
     try:
         # Separar la ecuación en 'operación' y 'resultado esperado'
         if '=' not in equation_str:
-            return "Invlida (sin '=')", None
+            return "Invalida (sin '=')", None
         
         parts = equation_str.split('=')
         operation_part = parts[0]
@@ -36,15 +30,15 @@ def evaluate_and_verify(equation_str):
         if calculated_result == expected_result:
             return "Correcto", calculated_result
         else:
-            return f"Incorrecto (debería ser {calculated_result})", calculated_result
+            return f"Incorrecto, deberia ser {calculated_result}", calculated_result
             
     except (SyntaxError, ValueError, ZeroDivisionError, IndexError):
         # Captura errores como '2++2', '4=', o si la conversión a int falla.
         return "Expresión mal formada", None
 
 def main():
-    #image_path = 'test_images/ejemplo_ecuacion.jpg'
-    image_path = 'test_images/sumas.png'
+    image_path = 'test_images/ejemplo_ecuacion.jpg'
+    #image_path = 'test_images/uys.png'
 
     output_path = 'resultado_con_cajas.jpg'
     

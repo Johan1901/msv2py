@@ -8,6 +8,77 @@ MODEL_PATH = 'model/math_symbol_recognizer.h5'
 LABELS_PATH = 'model/class_labels.json'
 IMG_WIDTH, IMG_HEIGHT = 28, 28
 
+def _merge_equal_sign_boxes(boxes, gap_threshold=20, width_diff=15, x_diff=15):
+
+    merged = []
+    skip = set()
+
+    for i in range(len(boxes)):
+        if i in skip:
+            continue
+        x1, y1, w1, h1 = boxes[i]
+        new_box = None
+
+        for j in range(i + 1, len(boxes)):
+            if j in skip:
+                continue
+            x2, y2, w2, h2 = boxes[j]
+
+            if abs(x1 - x2) <= x_diff and abs(w1 - w2) <= width_diff:
+                if y1 < y2:
+                    gap = y2 - (y1 + h1)
+                else:
+                    gap = y1 - (y2 + h2)
+
+                if 0 <= gap <= gap_threshold:
+                    x = min(x1, x2)
+                    y = min(y1, y2)
+                    w = max(x1 + w1, x2 + w2) - x
+                    h = max(y1 + h1, y2 + h2) - y
+                    new_box = (x, y, w, h)
+                    skip.add(j)
+                    break
+
+        if new_box:
+            merged.append(new_box)
+            skip.add(i)
+        else:
+            merged.append((x1, y1, w1, h1))
+
+    return merged
+
+
+def _dedupe_overlapping_boxes(boxes, iou_threshold=0.8):
+
+    def _iou(b1, b2):
+        x1, y1, w1, h1 = b1
+        x2, y2, w2, h2 = b2
+        xa = max(x1, x2)
+        ya = max(y1, y2)
+        xb = min(x1 + w1, x2 + w2)
+        yb = min(y1 + h1, y2 + h2)
+        inter = max(0, xb - xa) * max(0, yb - ya)
+        union = w1 * h1 + w2 * h2 - inter
+        return inter / union if union else 0
+
+    deduped = []
+    for box in boxes:
+        merged = False
+        for idx, existing in enumerate(deduped):
+            if _iou(box, existing) > iou_threshold:
+                x, y, w, h = box
+                ex, ey, ew, eh = existing
+                nx = min(x, ex)
+                ny = min(y, ey)
+                nw = max(x + w, ex + ew) - nx
+                nh = max(y + h, ey + eh) - ny
+                deduped[idx] = (nx, ny, nw, nh)
+                merged = True
+                break
+        if not merged:
+            deduped.append(box)
+    return deduped
+
 def process_equation_image(image_path):
     # 1. Cargar modelo y etiquetas
     try:
@@ -28,14 +99,16 @@ def process_equation_image(image_path):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     # El umbral adaptativo sigue siendo la mejor opción general
-    thresh = cv2.adaptiveThreshold(blurred, 255, 
-                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+    thresh = cv2.adaptiveThreshold(blurred, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY_INV, 21, 10)
 
-    # 3. Limpieza morfológica (MENOS AGRESIVA)
-    # Esto ayuda a conectar partes rotas de un caracter sin eliminarlo por completo
-    repair_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2,2))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, repair_kernel, iterations=1)
+    # 3. Limpieza morfológica
+    # Primero eliminar ruido fino y luego reforzar trazos para evitar confusiones
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, open_kernel, iterations=1)
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=1)
 
     # 4. Encontrar contornos
     contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -44,13 +117,18 @@ def process_equation_image(image_path):
     bounding_boxes = []
     for c in contours:
         (x, y, w, h) = cv2.boundingRect(c)
-        # Filtro de tamaño y relación de aspecto para aceptar solo caracteres probables
-        # Se ajustan los valores para ser un poco más permisivos que antes
-        if (w >= 10 and h >= 15) and (w < 2.5 * h):
+        aspect_ratio = w / float(h)
+        # Dígitos y símbolos altos
+        if w >= 10 and h >= 15 and aspect_ratio < 2.5:
+            bounding_boxes.append((x, y, w, h))
+        # Símbolos delgados como '-' y '='
+        elif w >= 15 and h >= 5 and aspect_ratio >= 2.5:
             bounding_boxes.append((x, y, w, h))
             
-    # 6. Ordenar y predecir
+    # 6. Ordenar, combinar y deduplicar posibles signos '=' antes de predecir
     bounding_boxes = sorted(bounding_boxes, key=lambda b: b[0])
+    bounding_boxes = _merge_equal_sign_boxes(bounding_boxes)
+    bounding_boxes = _dedupe_overlapping_boxes(bounding_boxes)
     
     recognitions = []
     for (x, y, w, h) in bounding_boxes:
@@ -64,6 +142,12 @@ def process_equation_image(image_path):
         prediction = model.predict(processed_roi, verbose=0)
         predicted_index = np.argmax(prediction)
         predicted_label = labels_to_class[predicted_index]
+
+        # Heurística para evitar que '+' se confunda con '4'
+        if predicted_label == '4':
+            box_aspect = w / float(h)
+            if 0.75 <= box_aspect <= 1.25:
+                predicted_label = 'add'
         
         recognitions.append((x, y, w, h, predicted_label))
 
