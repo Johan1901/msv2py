@@ -1,6 +1,9 @@
 tensorflow
 opencv-python
-imutils
+opencv-contrib-python
 numpy
 scikit-learn
-opencv-contrib-python
+imutils
+flask
+pymongo
+pillow
