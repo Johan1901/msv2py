@@ -7,3 +7,5 @@ imutils
 flask
 pymongo
 pillow
+"pymongo[srv]" dnspython
+python-dotenv
