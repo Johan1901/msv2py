@@ -22,3 +22,6 @@ Thumbs.db
 
 #testing
 test_mongo.py
+
+# Imágenes subidas
+uploaded_images/*

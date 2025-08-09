@@ -8,6 +8,9 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+# Carpeta donde se guardarán las imágenes procesadas
+IMAGES_DIR = "uploaded_images"
+
 from .image_processor import process_equation_image
 
 
@@ -36,6 +39,8 @@ def evaluate_and_verify(equation_str: str) -> Tuple[str, Optional[int]]:
 def process_and_store_image(
     image_bytes: bytes, alumno: Optional[str], collection
 ) -> Tuple[Dict[str, str], Optional[str]]:
+    # Asegura que la carpeta donde se guardarán las imágenes exista
+    os.makedirs(IMAGES_DIR, exist_ok=True)
 
     np_arr = np.frombuffer(image_bytes, np.uint8)
     imagen = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -83,6 +88,11 @@ def process_and_store_image(
         2,
     )
 
+    # Guarda la imagen procesada en disco
+    filename = f"{(alumno or 'alumno')}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.jpg"
+    image_path = os.path.join(IMAGES_DIR, filename)
+    cv2.imwrite(image_path, original_image)
+
     _, buffer = cv2.imencode(".jpg", original_image)
     base64_img = base64.b64encode(buffer).decode("utf-8")
 
@@ -92,6 +102,7 @@ def process_and_store_image(
         "ecuacion": equation_str,
         "veredicto": veredicto,
         "imagen": base64_img,
+        "ruta_local": image_path,
     }
     result = collection.insert_one(documento)
 
@@ -100,6 +111,7 @@ def process_and_store_image(
             "ecuacion": equation_str,
             "veredicto": veredicto,
             "imagen_base64": base64_img,
+            "ruta_local": image_path,
             "id": str(result.inserted_id),
         },
         None,
