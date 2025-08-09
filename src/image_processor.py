@@ -2,11 +2,16 @@ import cv2
 import json
 import numpy as np
 from tensorflow.keras.models import load_model
+from .preprocessing import clean_and_binarize
 
 # Constantes
-MODEL_PATH = 'model/math_symbol_recognizer.h5'
-LABELS_PATH = 'model/class_labels.json'
+MODEL_PATH = "model/math_symbol_recognizer.h5"
+LABELS_PATH = "model/class_labels.json"
 IMG_WIDTH, IMG_HEIGHT = 28, 28
+
+# Símbolos legibles y umbral de confianza mínimo
+LABEL_MAP = {"add": "+", "sub": "-", "eq": "="}
+CONFIDENCE_THRESHOLD = 0.8
 
 def _merge_equal_sign_boxes(boxes, gap_threshold=20, width_diff=15, x_diff=15):
 
@@ -79,76 +84,90 @@ def _dedupe_overlapping_boxes(boxes, iou_threshold=0.8):
             deduped.append(box)
     return deduped
 
+def _evaluate_equation(equation: str) -> str:
+    """Evalúa una ecuación simple y devuelve un veredicto."""
+    try:
+        if "=" not in equation:
+            return "Invalida (sin '=')"
+        left, right = equation.split("=")
+        calculated = eval(left)
+        expected = int(right)
+        if calculated == expected:
+            return "Correcto"
+        return f"Incorrecto, deberia ser {calculated}"
+    except Exception:
+        return "Expresión mal formada"
+    
+
 def process_equation_image(image_path):
     # 1. Cargar modelo y etiquetas
     try:
         model = load_model(MODEL_PATH)
-        with open(LABELS_PATH, 'r') as f:
+        with open(LABELS_PATH, "r") as f:
             class_labels = json.load(f)
         labels_to_class = {v: k for k, v in class_labels.items()}
     except IOError as e:
         print(f"Error al cargar el modelo o las etiquetas: {e}")
-        return None, []
+        return None, [], "", "Error"
 
     # 2. Cargar y pre-procesar la imagen
     image = cv2.imread(image_path)
     if image is None:
         print(f"Error: No se pudo leer la imagen en {image_path}")
-        return None, []
+        return None, [], "", "Error"
     
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    # El umbral adaptativo sigue siendo la mejor opción general
-    thresh = cv2.adaptiveThreshold(blurred, 255,
-                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 21, 10)
+    # Aplicar limpieza y binarización robusta para fotografías
+    thresh = clean_and_binarize(image)
 
-    # 3. Limpieza morfológica
-    # Primero eliminar ruido fino y luego reforzar trazos para evitar confusiones
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, open_kernel, iterations=1)
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_kernel, iterations=1)
-
-    # 4. Encontrar contornos
+     # 4. Encontrar contornos
     contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     # 5. Filtrar contornos con un método FIJO pero ROBUSTO
     bounding_boxes = []
     for c in contours:
         (x, y, w, h) = cv2.boundingRect(c)
         aspect_ratio = w / float(h)
+        area = w * h
+        if area < 50:
+            continue
         # Dígitos y símbolos altos
         if w >= 10 and h >= 15 and aspect_ratio < 2.5:
             bounding_boxes.append((x, y, w, h))
         # Símbolos delgados como '-' y '='
         elif w >= 15 and h >= 5 and aspect_ratio >= 2.5:
             bounding_boxes.append((x, y, w, h))
-            
+
     # 6. Ordenar, combinar y deduplicar posibles signos '=' antes de predecir
     bounding_boxes = sorted(bounding_boxes, key=lambda b: b[0])
     bounding_boxes = _merge_equal_sign_boxes(bounding_boxes)
     bounding_boxes = _dedupe_overlapping_boxes(bounding_boxes)
-    
+
     recognitions = []
+    equation_str = ""
     for (x, y, w, h) in bounding_boxes:
-        roi = thresh[y:y+h, x:x+w]
-        padded_roi = cv2.copyMakeBorder(roi, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        roi = thresh[y : y + h, x : x + w]
+        padded_roi = cv2.copyMakeBorder(
+            roi, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        )
         resized_roi = cv2.resize(padded_roi, (IMG_WIDTH, IMG_HEIGHT))
         processed_roi = resized_roi.astype("float32") / 255.0
         processed_roi = np.expand_dims(processed_roi, axis=-1)
         processed_roi = np.expand_dims(processed_roi, axis=0)
-        
-        prediction = model.predict(processed_roi, verbose=0)
-        predicted_index = np.argmax(prediction)
+
+        prediction = model.predict(processed_roi, verbose=0)[0]
+        prob = float(np.max(prediction))
+        predicted_index = int(np.argmax(prediction))
         predicted_label = labels_to_class[predicted_index]
 
         # Heurística para evitar que '+' se confunda con '4'
-        if predicted_label == '4':
+        if predicted_label == "4":
             box_aspect = w / float(h)
             if 0.75 <= box_aspect <= 1.25:
-                predicted_label = 'add'
-        
-        recognitions.append((x, y, w, h, predicted_label))
+                predicted_label = "add"
 
-    return image, recognitions
+        if prob >= CONFIDENCE_THRESHOLD:
+            recognitions.append((x, y, w, h, predicted_label, prob))
+            equation_str += LABEL_MAP.get(predicted_label, predicted_label)
+
+    veredict = _evaluate_equation(equation_str)
+    return image, recognitions, equation_str, veredict

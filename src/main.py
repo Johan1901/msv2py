@@ -11,29 +11,7 @@ import numpy as np
 # Carpeta donde se guardarán las imágenes procesadas
 IMAGES_DIR = "uploaded_images"
 
-from .image_processor import process_equation_image
-
-
-LABEL_MAP = {"add": "+", "sub": "-", "eq": "="}
-
-
-def evaluate_and_verify(equation_str: str) -> Tuple[str, Optional[int]]:
-
-    try:
-        if "=" not in equation_str:
-            return "Invalida (sin '=')", None
-
-        operation_part, expected_result_str = equation_str.split("=")
-        calculated_result = eval(operation_part)
-        expected_result = int(expected_result_str)
-
-        if calculated_result == expected_result:
-            return "Correcto", calculated_result
-
-        return f"Incorrecto, deberia ser {calculated_result}", calculated_result
-
-    except (SyntaxError, ValueError, ZeroDivisionError, IndexError):
-        return "Expresión mal formada", None
+from .image_processor import LABEL_MAP, process_equation_image
 
 
 def process_and_store_image(
@@ -52,17 +30,20 @@ def process_and_store_image(
         temp_path = tmp.name
 
     try:
-        original_image, recognitions = process_equation_image(temp_path)
+        (
+            original_image,
+            recognitions,
+            equation_str,
+            veredicto,
+        ) = process_equation_image(temp_path)
     finally:
         os.remove(temp_path)
 
     if original_image is None:
         return {}, "Error al procesar imagen"
 
-    equation_str = ""
-    for (x, y, w, h, label) in recognitions:
+    for (x, y, w, h, label, _prob) in recognitions:
         symbol = LABEL_MAP.get(label, label)
-        equation_str += symbol
         cv2.rectangle(original_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.putText(
             original_image,
@@ -73,8 +54,6 @@ def process_and_store_image(
             (0, 255, 0),
             2,
         )
-
-    veredicto, _ = evaluate_and_verify(equation_str)
 
     h, w, _ = original_image.shape
     color = (0, 255, 0) if "Correcto" in veredicto else (0, 0, 255)
